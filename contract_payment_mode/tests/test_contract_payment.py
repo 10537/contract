@@ -40,6 +40,14 @@ class TestContractPaymentInit(odoo.tests.HttpCase):
                 }
             )
 
+            self.payment_method_out = self.env["account.payment.method"].create(
+                {
+                    "name": "Test Payment Method",
+                    "code": "Test",
+                    "payment_type": "outbound",
+                }
+            )
+
         self.payment_mode = self.env["account.payment.mode"].create(
             {
                 "name": "Test payment mode",
@@ -48,10 +56,19 @@ class TestContractPaymentInit(odoo.tests.HttpCase):
                 "bank_account_link": "variable",
             }
         )
+        self.payment_mode_out = self.env["account.payment.mode"].create(
+            {
+                "name": "Test payment mode out",
+                "active": True,
+                "payment_method_id": self.payment_method_out.id,
+                "bank_account_link": "variable",
+            }
+        )
         self.partner = self.env["res.partner"].create(
             {
                 "name": "Test contract partner",
                 "customer_payment_mode_id": self.payment_mode,
+                "supplier_payment_mode_id": self.payment_mode_out,
             }
         )
         self.product = self.env["product.product"].create(
@@ -66,6 +83,13 @@ class TestContractPaymentInit(odoo.tests.HttpCase):
         self.contract = self.env["contract.contract"].create(
             {"name": "Maintenance of Servers", "partner_id": self.partner.id}
         )
+        self.contract_purchase = self.env["contract.contract"].create(
+            {
+                "name": "Maintenance of Servers",
+                "partner_id": self.partner.id,
+                "contract_type": "purchase",
+            }
+        )
         company = self.env.ref("base.main_company")
         self.journal = self.env["account.journal"].create(
             {
@@ -77,20 +101,35 @@ class TestContractPaymentInit(odoo.tests.HttpCase):
         )
 
     def test_post_init_hook(self):
-        contract = self.env["contract.contract"].create(
+        sale_contract = self.env["contract.contract"].create(
             {
-                "name": "Test contract",
+                "name": "Test sale contract",
                 "partner_id": self.partner.id,
                 "payment_mode_id": self.payment_mode.id,
             }
         )
-        self.assertEqual(contract.payment_mode_id, self.payment_mode)
+        self.assertEqual(sale_contract.payment_mode_id, self.payment_mode)
 
-        contract.payment_mode_id = False
-        self.assertEqual(contract.payment_mode_id.id, False)
+        sale_contract.payment_mode_id = False
+        self.assertEqual(sale_contract.payment_mode_id.id, False)
+
+        purchase_contract = self.env["contract.contract"].create(
+            {
+                "name": "Test purchase contract",
+                "partner_id": self.partner.id,
+                "payment_mode_id": self.payment_mode_out.id,
+                "contract_type": "purchase",
+            }
+        )
+        self.assertEqual(purchase_contract.payment_mode_id, self.payment_mode_out)
+
+        purchase_contract.payment_mode_id = False
+        self.assertEqual(purchase_contract.payment_mode_id.id, False)
 
         post_init_hook(self.cr, self.env)
-        self.assertEqual(contract.payment_mode_id, self.payment_mode)
+
+        self.assertEqual(sale_contract.payment_mode_id, self.payment_mode)
+        self.assertEqual(purchase_contract.payment_mode_id, self.payment_mode_out)
 
     def test_contract_and_invoices(self):
         self.contract.write({"partner_id": self.partner.id})
@@ -129,3 +168,45 @@ class TestContractPaymentInit(odoo.tests.HttpCase):
         self.assertEqual(len(new_invoice.ids), 1)
         self.contract.recurring_create_invoice()
         self.assertEqual(self.contract.payment_mode_id, new_invoice.payment_mode_id)
+
+    def test_contract_and_invoices_purchase(self):
+        self.contract_purchase.write({"partner_id": self.partner.id})
+        self.contract_purchase.on_change_partner_id()
+        self.assertEqual(
+            self.contract_purchase.payment_mode_id,
+            self.contract_purchase.partner_id.supplier_payment_mode_id,
+        )
+        self.contract_purchase.write(
+            {
+                "line_recurrence": True,
+                "contract_type": "purchase",
+                "recurring_interval": 1,
+                "recurring_rule_type": "monthly",
+                "date_start": "2018-01-15",
+                "contract_line_ids": [
+                    (
+                        0,
+                        0,
+                        {
+                            "product_id": self.product.id,
+                            "name": "Database Administration 25",
+                            "quantity": 2.0,
+                            "uom_id": self.product.uom_id.id,
+                            "price_unit": 200.0,
+                        },
+                    )
+                ],
+            }
+        )
+        self.contract_purchase.recurring_create_invoice()
+        new_invoice = self.contract_purchase._get_related_invoices()
+        self.assertTrue(new_invoice)
+        self.assertEqual(new_invoice.partner_id, self.contract_purchase.partner_id)
+        self.assertEqual(
+            new_invoice.payment_mode_id, self.contract_purchase.payment_mode_id
+        )
+        self.assertEqual(len(new_invoice.ids), 1)
+        self.contract_purchase.recurring_create_invoice()
+        self.assertEqual(
+            self.contract_purchase.payment_mode_id, new_invoice.payment_mode_id
+        )

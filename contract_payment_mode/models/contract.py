@@ -25,4 +25,4 @@ class ContractContract(models.Model):
         )
         if self.payment_mode_id:
             invoice_vals["payment_mode_id"] = self.payment_mode_id.id
-        return invoice_vals, move_form
+        return invoice_vals
